@@ -135,6 +135,11 @@ InstructionSelector *createX86InstructionSelector(const X86TargetMachine &TM,
 
 FunctionPass *createX86SpeculativeLoadHardeningPass();
 
+/// This pass instruments indirect branches and return instructions
+/// with code that verifies control will not flow to user space memory.
+FunctionPass *createX86SMEPPass();
+
+
 void initializeEvexToVexInstPassPass(PassRegistry &);
 void initializeFixupBWInstPassPass(PassRegistry &);
 void initializeFixupLEAPassPass(PassRegistry &);
@@ -150,6 +155,7 @@ void initializeX86ExpandPseudoPass(PassRegistry &);
 void initializeX86FlagsCopyLoweringPassPass(PassRegistry &);
 void initializeX86OptimizeLEAPassPass(PassRegistry &);
 void initializeX86SpeculativeLoadHardeningPassPass(PassRegistry &);
+void initializeX86SMEPPass(PassRegistry &);
 
 namespace X86AS {
 enum : unsigned {
