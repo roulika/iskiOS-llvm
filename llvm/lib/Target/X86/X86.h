@@ -135,6 +135,11 @@ InstructionSelector *createX86InstructionSelector(const X86TargetMachine &TM,
 
 FunctionPass *createX86SpeculativeLoadHardeningPass();
 
+/// This pass implements a simple approach to code-pointer hiding where
+/// every function entry and every callsite is padded with a random number
+/// of trap instructions.
+FunctionPass *createX86CPHPass();
+
 /// This pass instruments indirect branches and return instructions
 /// with code that verifies control will not flow to user space memory.
 FunctionPass *createX86SMEPPass();
@@ -149,6 +154,7 @@ void initializeX86AvoidSFBPassPass(PassRegistry &);
 void initializeX86CallFrameOptimizationPass(PassRegistry &);
 void initializeX86CmovConverterPassPass(PassRegistry &);
 void initializeX86CondBrFoldingPassPass(PassRegistry &);
+void initializeX86CPHPass(PassRegistry &);
 void initializeX86DomainReassignmentPass(PassRegistry &);
 void initializeX86ExecutionDomainFixPass(PassRegistry &);
 void initializeX86ExpandPseudoPass(PassRegistry &);
