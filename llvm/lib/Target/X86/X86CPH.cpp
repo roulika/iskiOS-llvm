@@ -63,6 +63,7 @@ char X86CPH::ID = 0;
 } // end anonymous namespace.
 
 bool X86CPH::runOnMachineFunction(MachineFunction &Fn) {
+  //return false;
   /* Parts of kernel boot loader (i.e., /arch/x86/boot/compressed/*) */
   if (Fn.getFunction().hasFnAttribute(Attribute::Naked) ||
       (Fn.getTarget().getCodeModel() != CodeModel::Kernel))

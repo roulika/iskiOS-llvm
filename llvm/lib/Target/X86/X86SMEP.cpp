@@ -54,7 +54,7 @@ char X86SMEP::ID = 0;
 }  // end anonymous namespace.
 
 bool X86SMEP::runOnMachineFunction(MachineFunction &Fn) {
-  //return false;
+  // return false;
   /* Parts of kernel boot loader (i.e., /arch/x86/boot/compressed/*) */
   if (Fn.getFunction().hasFnAttribute(Attribute::Naked) ||
       (Fn.getTarget().getCodeModel() != CodeModel::Kernel))
@@ -64,7 +64,9 @@ bool X86SMEP::runOnMachineFunction(MachineFunction &Fn) {
 
   if (!Fn.getSubtarget<X86Subtarget>().is64Bit()) return false;
 
-  if (Fn.getName() == "sync_regs" || Fn.getName() == "prepare_exit_to_usermode")
+  if (Fn.getName() == "sync_regs" ||
+      Fn.getName() == "prepare_exit_to_usermode" ||
+      Fn.getName() == "amdgpu_umc_ras_late_init")
     return false;
 
   const TargetInstrInfo *TII = Fn.getSubtarget().getInstrInfo();
@@ -130,7 +132,8 @@ bool X86SMEP::runOnMachineFunction(MachineFunction &Fn) {
           .addImm(X86::COND_B);
 
       // // ud2
-      // auto trapInst = BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::TRAP));
+      // auto trapInst = BuildMI(MBB, MI, MI.getDebugLoc(),
+      // TII->get(X86::TRAP));
 
       // nop
       auto trapInst = BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::NOOP));
