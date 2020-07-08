@@ -135,6 +135,11 @@ InstructionSelector *createX86InstructionSelector(const X86TargetMachine &TM,
 
 FunctionPass *createX86SpeculativeLoadHardeningPass();
 
+/// This pass instruments every function prolog to save the return address to a
+/// 'shadow stack' and each function epilog to check that the return address
+/// did not change during function execution.
+FunctionPass *createX86KernelShadowStackPass();
+
 /// This pass implements a simple approach to code-pointer hiding where
 /// every function entry and every callsite is padded with a random number
 /// of trap instructions.
@@ -159,6 +164,7 @@ void initializeX86DomainReassignmentPass(PassRegistry &);
 void initializeX86ExecutionDomainFixPass(PassRegistry &);
 void initializeX86ExpandPseudoPass(PassRegistry &);
 void initializeX86FlagsCopyLoweringPassPass(PassRegistry &);
+void initializeX86KernelShadowStackPass(PassRegistry &);
 void initializeX86OptimizeLEAPassPass(PassRegistry &);
 void initializeX86SpeculativeLoadHardeningPassPass(PassRegistry &);
 void initializeX86SMEPPass(PassRegistry &);

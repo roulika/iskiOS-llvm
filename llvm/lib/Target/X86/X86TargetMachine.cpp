@@ -74,6 +74,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeX86Target() {
   initializeFixupLEAPassPass(PR);
   initializeFPSPass(PR);
   initializeX86CPHPass(PR);
+  initializeX86KernelShadowStackPass(PR);
   initializeX86SMEPPass(PR);
   initializeX86CallFrameOptimizationPass(PR);
   initializeX86CmovConverterPassPass(PR);
@@ -509,6 +510,7 @@ void X86PassConfig::addPreEmitPass() {
   }
 
   addPass(createX86CPHPass());
+  addPass(createX86KernelShadowStackPass());
   addPass(createX86SMEPPass());
   addPass(createX86IndirectBranchTrackingPass());
 
