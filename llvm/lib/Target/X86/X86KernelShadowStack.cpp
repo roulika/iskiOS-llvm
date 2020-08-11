@@ -44,6 +44,8 @@
 
 #define PGSIZE 4096
 
+#define SAFE_WRPKRU
+
 using namespace llvm;
 
 namespace {
@@ -129,6 +131,34 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
     // wrpkru
     BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
 
+#ifdef SAFE_WRPKRU
+{
+    MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
+
+    // mov %rcx, %cs
+    BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX).addReg(X86::CS);
+
+    // testb $3, %cl
+    BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri)).addReg(X86::CL).addImm(3);
+
+    // je SkipSymbol
+    BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
+        .addSym(SkipSymbol)
+        .addImm(X86::COND_E);
+
+    // ud2
+    auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
+
+    trapInst->setPostInstrSymbol(Fn, SkipSymbol);
+
+    // xor rcx, rcx
+    BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64rr))
+        .addDef(X86::RCX)
+        .addReg(X86::RCX, RegState::Undef)
+        .addReg(X86::RCX, RegState::Undef);
+}
+#endif
+
     // mov [rsp+0x10-4*PGSIZE], r10
     addRegOffset(BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64mr)), X86::RSP,
                  false, 0x10 - 4 * PGSIZE)
@@ -141,6 +171,28 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
 
     // wrpkru
     BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
+
+#ifdef SAFE_WRPKRU
+{
+    MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
+
+    // mov %rcx, %cs
+    BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX).addReg(X86::CS);
+
+    // testb $3, %cl
+    BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri)).addReg(X86::CL).addImm(3);
+
+    // je SkipSymbol
+    BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
+        .addSym(SkipSymbol)
+        .addImm(X86::COND_E);
+
+    // ud2
+    auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
+
+    trapInst->setPostInstrSymbol(Fn, SkipSymbol);
+}
+#endif
 
     // pop rdx
     BuildMI(MBB, MBBI, DL, TII->get(X86::POP64r))
