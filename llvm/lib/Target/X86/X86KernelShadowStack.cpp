@@ -46,6 +46,7 @@
 
 #define SAFE_WRPKRU
 #define SWO
+#define LFO
 
 using namespace llvm;
 
@@ -94,131 +95,190 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
   if (Fn.getName() == "sync_regs")
     return false;
 
+  MCPhysReg LeafFuncRegister = X86::NoRegister;
+  // For leaf functions:
+  //    Detect if there is an unused caller-saved register we can reserve to
+  //    hold the return address instead of writing/reading it from the shadow
+  //    call stack.
+  if (!Fn.getFrameInfo().adjustsStack()) {
+    std::bitset<X86::NUM_TARGET_REGS> UsedRegs;
+    for (auto &MBB : Fn) {
+      for (auto &LiveIn : MBB.liveins()) UsedRegs.set(LiveIn.PhysReg);
+      for (auto &MI : MBB) {
+        for (auto &Op : MI.operands())
+          if (Op.isReg() && Op.isDef()) UsedRegs.set(Op.getReg());
+      }
+    }
+
+    std::bitset<X86::NUM_TARGET_REGS> CalleeSavedRegs;
+    const MCPhysReg *CSRegs = Fn.getRegInfo().getCalleeSavedRegs();
+    for (size_t i = 0; CSRegs[i]; i++) CalleeSavedRegs.set(CSRegs[i]);
+
+    const TargetRegisterInfo *TRI = Fn.getSubtarget().getRegisterInfo();
+    for (auto &Reg : X86::GR64_NOSPRegClass.getRegisters()) {
+      // FIXME: Optimization opportunity: spill/restore a callee-saved register
+      // if a caller-saved register is unavailable.
+      if (CalleeSavedRegs.test(Reg)) continue;
+
+      bool Used = false;
+      for (MCSubRegIterator SR(Reg, TRI, true); SR.isValid(); ++SR)
+        if ((Used = UsedRegs.test(*SR))) break;
+
+      if (!Used && Reg != X86::R10) {
+        LeafFuncRegister = Reg;
+        break;
+      }
+    }
+  }
+
+#ifdef LFO
+  const bool LeafFuncOptimization = LeafFuncRegister != X86::NoRegister;
+#else
+  const bool LeafFuncOptimization = false;
+#endif
+
   MachineBasicBlock &MBB = Fn.front();
   const MachineBasicBlock *NonEmpty = MBB.empty() ? MBB.getFallThrough() : &MBB;
   const DebugLoc &DL = NonEmpty->front().getDebugLoc();
   const TargetInstrInfo *TII = Fn.getSubtarget().getInstrInfo();
 
+  /* Prolog Instrumentation */
+
   if (Fn.getName() != "copy_user_handle_tail" &&
       Fn.getName() != "__startup_64" &&
       Fn.getName() != "prepare_exit_to_usermode" &&
       Fn.getName() != "__startup_secondary_64") {
-    auto MBBI = MBB.begin();
+    if (LeafFuncOptimization) {
+      auto MBBI = MBB.begin();
+      // Mark the leaf function register live-in for all MBBs except the entry
+      // MBB
+      for (auto I = ++Fn.begin(), E = Fn.end(); I != E; ++I)
+        I->addLiveIn(LeafFuncRegister);
 
-    /* Prolog Instrumentation */
+      // mov REG, r10
+      BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rr), LeafFuncRegister)
+          .addReg(X86::R10);
+    } else {
+      auto MBBI = MBB.begin();
 
-    // push rcx
-    BuildMI(MBB, MBBI, DL, TII->get(X86::PUSH64r))
-        .addReg(X86::RCX, RegState::Kill);
+      // push rcx
+      BuildMI(MBB, MBBI, DL, TII->get(X86::PUSH64r))
+          .addReg(X86::RCX, RegState::Kill);
 
-    // push rdx
-    BuildMI(MBB, MBBI, DL, TII->get(X86::PUSH64r))
-        .addReg(X86::RDX, RegState::Kill);
+      // push rdx
+      BuildMI(MBB, MBBI, DL, TII->get(X86::PUSH64r))
+          .addReg(X86::RDX, RegState::Kill);
 
-    MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
-
-#ifdef SWO
-    // cmp [rsp+0x10-4*PGSIZE], r10
-    addRegOffset(BuildMI(MBB, MBBI, DL, TII->get(X86::CMP64mr)), X86::RSP,
-                 false, 0x10 - 4 * PGSIZE)
-        .addReg(X86::R10);
-
-    // je SkipSymbol
-    BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
-        .addSym(SkipSymbol)
-        .addImm(X86::COND_E);
-#endif
-
-    // xor rcx, rcx
-    BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64rr))
-        .addDef(X86::RCX)
-        .addReg(X86::RCX, RegState::Undef)
-        .addReg(X86::RCX, RegState::Undef);
-
-    // rdpkru
-    BuildMI(MBB, MBBI, DL, TII->get(X86::RDPKRUr));
-
-    // xor %rax, $(1 << 20)
-    BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64ri32), X86::RAX)
-        .addReg(X86::RAX)
-        .addImm(1 << 20);
-
-    // wrpkru
-    BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
-
-#ifdef SAFE_WRPKRU
-    {
       MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
 
-      // mov %rcx, %cs
-      BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX).addReg(X86::CS);
-
-      // testb $3, %cl
-      BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri)).addReg(X86::CL).addImm(3);
+#ifdef SWO
+      // cmp [rsp+0x10-4*PGSIZE], r10
+      addRegOffset(BuildMI(MBB, MBBI, DL, TII->get(X86::CMP64mr)), X86::RSP,
+                   false, 0x10 - 4 * PGSIZE)
+          .addReg(X86::R10);
 
       // je SkipSymbol
       BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
           .addSym(SkipSymbol)
           .addImm(X86::COND_E);
-
-      // ud2
-      auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
-
-      trapInst->setPostInstrSymbol(Fn, SkipSymbol);
+#endif
 
       // xor rcx, rcx
       BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64rr))
           .addDef(X86::RCX)
           .addReg(X86::RCX, RegState::Undef)
           .addReg(X86::RCX, RegState::Undef);
-    }
-#endif
 
-    // mov [rsp+0x10-4*PGSIZE], r10
-    addRegOffset(BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64mr)), X86::RSP,
-                 false, 0x10 - 4 * PGSIZE)
-        .addDef(X86::R10);
+      // rdpkru
+      BuildMI(MBB, MBBI, DL, TII->get(X86::RDPKRUr));
 
-    // xor %rax, $(1 << 20)
-    BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64ri32), X86::RAX)
-        .addReg(X86::RAX)
-        .addImm(1 << 20);
+      // xor %rax, $(1 << 20)
+      BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64ri32), X86::RAX)
+          .addReg(X86::RAX)
+          .addImm(1 << 20);
 
-    // wrpkru
-    auto Inst = BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
+      // wrpkru
+      BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
 
 #ifdef SAFE_WRPKRU
-    {
-      MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
+      {
+        MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
 
-      // mov %rcx, %cs
-      BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX).addReg(X86::CS);
+        // mov %rcx, %cs
+        BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX)
+            .addReg(X86::CS);
 
-      // testb $3, %cl
-      BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri)).addReg(X86::CL).addImm(3);
+        // testb $3, %cl
+        BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri))
+            .addReg(X86::CL)
+            .addImm(3);
 
-      // je SkipSymbol
-      BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
-          .addSym(SkipSymbol)
-          .addImm(X86::COND_E);
+        // je SkipSymbol
+        BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
+            .addSym(SkipSymbol)
+            .addImm(X86::COND_E);
 
-      // ud2
-      auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
+        // ud2
+        auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
 
-      trapInst->setPostInstrSymbol(Fn, SkipSymbol);
-    }
+        trapInst->setPostInstrSymbol(Fn, SkipSymbol);
+
+        // xor rcx, rcx
+        BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64rr))
+            .addDef(X86::RCX)
+            .addReg(X86::RCX, RegState::Undef)
+            .addReg(X86::RCX, RegState::Undef);
+      }
 #endif
 
-    // skip:
-    Inst->setPostInstrSymbol(Fn, SkipSymbol);
+      // mov [rsp+0x10-4*PGSIZE], r10
+      addRegOffset(BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64mr)), X86::RSP,
+                   false, 0x10 - 4 * PGSIZE)
+          .addDef(X86::R10);
 
-    // pop rdx
-    BuildMI(MBB, MBBI, DL, TII->get(X86::POP64r))
-        .addReg(X86::RDX, RegState::Kill);
+      // xor %rax, $(1 << 20)
+      BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64ri32), X86::RAX)
+          .addReg(X86::RAX)
+          .addImm(1 << 20);
 
-    // pop rcx
-    BuildMI(MBB, MBBI, DL, TII->get(X86::POP64r))
-        .addReg(X86::RCX, RegState::Kill);
+      // wrpkru
+      auto Inst = BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
+
+#ifdef SAFE_WRPKRU
+      {
+        MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
+
+        // mov %rcx, %cs
+        BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX)
+            .addReg(X86::CS);
+
+        // testb $3, %cl
+        BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri))
+            .addReg(X86::CL)
+            .addImm(3);
+
+        // je SkipSymbol
+        BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
+            .addSym(SkipSymbol)
+            .addImm(X86::COND_E);
+
+        // ud2
+        auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
+
+        trapInst->setPostInstrSymbol(Fn, SkipSymbol);
+      }
+#endif
+
+      // skip:
+      Inst->setPostInstrSymbol(Fn, SkipSymbol);
+
+      // pop rdx
+      BuildMI(MBB, MBBI, DL, TII->get(X86::POP64r))
+          .addReg(X86::RDX, RegState::Kill);
+
+      // pop rcx
+      BuildMI(MBB, MBBI, DL, TII->get(X86::POP64r))
+          .addReg(X86::RCX, RegState::Kill);
 
 #if 0
   /* NOTE: Uncomment the following two instructions to identify
@@ -245,6 +305,7 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
         .addImm(X86::COND_NE);
   }
 #endif
+    }
   }
 
   /* Epilog Instrumentation */
@@ -262,21 +323,35 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
           Fn.getName() != "__startup_secondary_64") {
         /* Use jmp to avoid race. */
 
-        // mov r10, [rsp-4*PGSIZE]
-        addRegOffset(BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::MOV64rm))
-                         .addDef(X86::R10),
-                     X86::RSP, false, -4 * PGSIZE);
+        if (LeafFuncOptimization) {
+          // add rsp, 0x8
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::ADD64ri8), X86::RSP)
+              .addReg(X86::RSP)
+              .addImm(0x8);
 
-        // add rsp, 0x8
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::ADD64ri8), X86::RSP)
-            .addReg(X86::RSP)
-            .addImm(0x8);
+          // jmp *REG
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::JMP64r))
+              .addReg(LeafFuncRegister);
 
-        // jmp *r10
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::JMP64r))
-            .addReg(X86::R10);
+          MI.eraseFromParent();
+        } else {
+          // mov r10, [rsp-4*PGSIZE]
+          addRegOffset(
+              BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::MOV64rm))
+                  .addDef(X86::R10),
+              X86::RSP, false, -4 * PGSIZE);
 
-        MI.eraseFromParent();
+          // add rsp, 0x8
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::ADD64ri8), X86::RSP)
+              .addReg(X86::RSP)
+              .addImm(0x8);
+
+          // jmp *r10
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::JMP64r))
+              .addReg(X86::R10);
+
+          MI.eraseFromParent();
+        }
       }
     }
   }
@@ -289,12 +364,17 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
       if (MI.isCall()) {
 #if 1
         if (MI.isReturn()) {
-          // mov r10, [rsp-4*PGSIZE]
-          addRegOffset(
-              BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::MOV64rm))
-                  .addDef(X86::R10),
-              X86::RSP, false, -4 * PGSIZE);
-
+          if (LeafFuncOptimization) {
+            // mov r10, REG
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::MOV64rr), X86::R10)
+                .addReg(LeafFuncRegister);
+          } else {
+            // mov r10, [rsp-4*PGSIZE]
+            addRegOffset(
+                BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::MOV64rm))
+                    .addDef(X86::R10),
+                X86::RSP, false, -4 * PGSIZE);
+          }
           continue;
         }
 
