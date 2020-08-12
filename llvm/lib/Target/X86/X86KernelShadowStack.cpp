@@ -242,7 +242,7 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
           .addImm(1 << 20);
 
       // wrpkru
-      auto Inst = BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
+      BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
 
 #ifdef SAFE_WRPKRU
       {
@@ -269,12 +269,12 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
       }
 #endif
 
-      // skip:
-      Inst->setPostInstrSymbol(Fn, SkipSymbol);
-
       // pop rdx
-      BuildMI(MBB, MBBI, DL, TII->get(X86::POP64r))
-          .addReg(X86::RDX, RegState::Kill);
+      auto Inst = BuildMI(MBB, MBBI, DL, TII->get(X86::POP64r))
+                      .addReg(X86::RDX, RegState::Kill);
+
+      // skip:
+      Inst->setPreInstrSymbol(Fn, SkipSymbol);
 
       // pop rcx
       BuildMI(MBB, MBBI, DL, TII->get(X86::POP64r))
