@@ -45,6 +45,7 @@
 #define PGSIZE 4096
 
 #define SAFE_WRPKRU
+#define SWO
 
 using namespace llvm;
 
@@ -114,6 +115,20 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
     BuildMI(MBB, MBBI, DL, TII->get(X86::PUSH64r))
         .addReg(X86::RDX, RegState::Kill);
 
+    MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
+
+#ifdef SWO
+    // cmp [rsp+0x10-4*PGSIZE], r10
+    addRegOffset(BuildMI(MBB, MBBI, DL, TII->get(X86::CMP64mr)), X86::RSP,
+                 false, 0x10 - 4 * PGSIZE)
+        .addReg(X86::R10);
+
+    // je SkipSymbol
+    BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
+        .addSym(SkipSymbol)
+        .addImm(X86::COND_E);
+#endif
+
     // xor rcx, rcx
     BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64rr))
         .addDef(X86::RCX)
@@ -132,31 +147,31 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
     BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
 
 #ifdef SAFE_WRPKRU
-{
-    MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
+    {
+      MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
 
-    // mov %rcx, %cs
-    BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX).addReg(X86::CS);
+      // mov %rcx, %cs
+      BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX).addReg(X86::CS);
 
-    // testb $3, %cl
-    BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri)).addReg(X86::CL).addImm(3);
+      // testb $3, %cl
+      BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri)).addReg(X86::CL).addImm(3);
 
-    // je SkipSymbol
-    BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
-        .addSym(SkipSymbol)
-        .addImm(X86::COND_E);
+      // je SkipSymbol
+      BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
+          .addSym(SkipSymbol)
+          .addImm(X86::COND_E);
 
-    // ud2
-    auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
+      // ud2
+      auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
 
-    trapInst->setPostInstrSymbol(Fn, SkipSymbol);
+      trapInst->setPostInstrSymbol(Fn, SkipSymbol);
 
-    // xor rcx, rcx
-    BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64rr))
-        .addDef(X86::RCX)
-        .addReg(X86::RCX, RegState::Undef)
-        .addReg(X86::RCX, RegState::Undef);
-}
+      // xor rcx, rcx
+      BuildMI(MBB, MBBI, DL, TII->get(X86::XOR64rr))
+          .addDef(X86::RCX)
+          .addReg(X86::RCX, RegState::Undef)
+          .addReg(X86::RCX, RegState::Undef);
+    }
 #endif
 
     // mov [rsp+0x10-4*PGSIZE], r10
@@ -170,29 +185,32 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
         .addImm(1 << 20);
 
     // wrpkru
-    BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
+    auto Inst = BuildMI(MBB, MBBI, DL, TII->get(X86::WRPKRUr));
 
 #ifdef SAFE_WRPKRU
-{
-    MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
+    {
+      MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
 
-    // mov %rcx, %cs
-    BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX).addReg(X86::CS);
+      // mov %rcx, %cs
+      BuildMI(MBB, MBBI, DL, TII->get(X86::MOV64rs), X86::RCX).addReg(X86::CS);
 
-    // testb $3, %cl
-    BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri)).addReg(X86::CL).addImm(3);
+      // testb $3, %cl
+      BuildMI(MBB, MBBI, DL, TII->get(X86::TEST8ri)).addReg(X86::CL).addImm(3);
 
-    // je SkipSymbol
-    BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
-        .addSym(SkipSymbol)
-        .addImm(X86::COND_E);
+      // je SkipSymbol
+      BuildMI(MBB, MBBI, DL, TII->get(X86::JCC_1))
+          .addSym(SkipSymbol)
+          .addImm(X86::COND_E);
 
-    // ud2
-    auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
+      // ud2
+      auto trapInst = BuildMI(MBB, MBBI, DL, TII->get(X86::TRAP));
 
-    trapInst->setPostInstrSymbol(Fn, SkipSymbol);
-}
+      trapInst->setPostInstrSymbol(Fn, SkipSymbol);
+    }
 #endif
+
+    // skip:
+    Inst->setPostInstrSymbol(Fn, SkipSymbol);
 
     // pop rdx
     BuildMI(MBB, MBBI, DL, TII->get(X86::POP64r))
