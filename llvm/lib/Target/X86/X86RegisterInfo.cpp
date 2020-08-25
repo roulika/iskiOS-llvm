@@ -568,6 +568,11 @@ BitVector X86RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   Reserved.set(X86::FS);
   Reserved.set(X86::GS);
 
+  // Set the R10 register and its aliases as reserved.
+  for (MCSubRegIterator I(X86::R10, this, /*IncludeSelf=*/true); I.isValid();
+       ++I)
+    Reserved.set(*I);
+
   // Mark the floating point stack registers as reserved.
   for (unsigned n = 0; n != 8; ++n)
     Reserved.set(X86::ST0 + n);

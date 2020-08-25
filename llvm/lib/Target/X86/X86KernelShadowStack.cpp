@@ -381,33 +381,13 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
         MCSymbol *RetSymbol = Fn.getContext().createTempSymbol();
         MI.setPostInstrSymbol(Fn, RetSymbol);
 
-        /* Note: If the call is already using R10 as a pointer, we change it
-         * to use R11 instead.
-         */
-        if (MI.findRegisterUseOperand(X86::R10) ||
-            MI.hasRegisterImplicitUseOperand(X86::R10)) {
-          // mov r11, r10
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::MOV64rr), X86::R11)
-              .addReg(X86::R10);
-
-          // lea r10, RetSymbol
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::LEA64r), X86::R10)
-              .addReg(/*Base*/ X86::RIP)
-              .addImm(/*Scale*/ 1)
-              .addReg(/*Index*/ 0)
-              .addSym(RetSymbol)
-              .addReg(/*Segment*/ 0);
-
-          MI.getOperand(0).setReg(X86::R11);
-        } else {
-          // lea r10, RetSymbol
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::LEA64r), X86::R10)
-              .addReg(/*Base*/ X86::RIP)
-              .addImm(/*Scale*/ 1)
-              .addReg(/*Index*/ 0)
-              .addSym(RetSymbol)
-              .addReg(/*Segment*/ 0);
-        }
+        // lea r10, RetSymbol
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::LEA64r), X86::R10)
+            .addReg(/*Base*/ X86::RIP)
+            .addImm(/*Scale*/ 1)
+            .addReg(/*Index*/ 0)
+            .addSym(RetSymbol)
+            .addReg(/*Segment*/ 0);
 #endif
         // callq
       }
