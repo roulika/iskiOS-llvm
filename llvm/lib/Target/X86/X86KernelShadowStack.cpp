@@ -47,9 +47,14 @@
 // address. If not, it stores both the current and the updated %r10 to the
 // shadow stack, halving the #wrpkrus.
 //
-// Safe WRPKRU (SAFE_WRPKRU)
+// Priv WRPKRU (PRIV_WRPKRU)
 // When defined, every wrpkru is followed by code that ensures that the
 // privilege level of the currently executing code is 3 (i.e., kernel mode).
+//
+// Safe WRPKRU (SAFE_WRPKRU)
+// When defined, ecery wrpkru is also followed by a check which ensures that
+// the pkru permissions are not being set to a desired attacker value who could
+// then jump to a wrpkru instruction and bypass our protection.
 //
 // Note: the shadow call stack is addressed 0x4000 relative current %rsp since
 // we've increased each stack in the kernel by 4KB pages.
@@ -71,6 +76,7 @@
 
 #define PGSIZE 4096
 
+#define PRIV_WRPKRU
 #define SAFE_WRPKRU
 #define DWO
 
@@ -239,7 +245,7 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
         // wrpkru
         BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::WRPKRUr));
 
-#ifdef SAFE_WRPKRU
+#ifdef PRIV_WRPKRU
         {
           MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
 
@@ -261,8 +267,26 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
           auto trapInst =
               BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::TRAP));
 
+          // skip:
           trapInst->setPostInstrSymbol(Fn, SkipSymbol);
 
+#ifdef SAFE_WRPKRU
+          {
+            MCSymbol *TrapSymbol = Fn.getContext().createTempSymbol();
+            // trap:
+            trapInst->setPreInstrSymbol(Fn, TrapSymbol);
+
+            // cmp %ax, %ax (cmp %ax, 0xfff0)
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::CMP16rr))
+                .addReg(X86::AX)
+                .addReg(X86::AX);
+
+            // jne TrapSymbol
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::JCC_1))
+                .addSym(TrapSymbol)
+                .addImm(X86::COND_NE);
+          }
+#endif
           // xor rcx, rcx
           BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::XOR64rr))
               .addDef(X86::RCX)
@@ -284,11 +308,6 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
             .addSym(RetSymbol)
             .addReg(/*Segment*/ 0);
 
-        // mov [rsp+0x10-4*PGSIZE], r10
-        addRegOffset(BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::MOV64mr)),
-                     X86::RSP, false, 0x10 - 4 * PGSIZE)
-            .addDef(X86::R10);
-
         // xor %rax, $(1 << 20)
         BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::XOR64ri32), X86::RAX)
             .addReg(X86::RAX)
@@ -297,7 +316,7 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
         // wrpkru
         BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::WRPKRUr));
 
-#ifdef SAFE_WRPKRU
+#ifdef PRIV_WRPKRU
         {
           MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
 
@@ -319,7 +338,26 @@ bool X86KernelShadowStack::runOnMachineFunction(MachineFunction &Fn) {
           auto trapInst =
               BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::TRAP));
 
+          // skip:
           trapInst->setPostInstrSymbol(Fn, SkipSymbol);
+
+#ifdef SAFE_WRPKRU
+          {
+            MCSymbol *TrapSymbol = Fn.getContext().createTempSymbol();
+            // trap:
+            trapInst->setPreInstrSymbol(Fn, TrapSymbol);
+
+            // cmp %ax, %ax (cmp %ax, 0xfff0)
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::CMP16rr))
+                .addReg(X86::AX)
+                .addReg(X86::AX);
+
+            // jne TrapSymbol
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::JCC_1))
+                .addSym(TrapSymbol)
+                .addImm(X86::COND_NE);
+          }
+#endif
         }
 #endif
 
