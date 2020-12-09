@@ -75,27 +75,49 @@ bool X86SMEP::runOnMachineFunction(MachineFunction &Fn) {
     if (MBB.empty()) continue;
 
     for (auto &MI : MBB) {
-      // If MI is a return, handle it first.
-      if (MI.isReturn() && !MI.isCall()) {
-        if (Fn.getName() != "copy_user_handle_tail" &&
-            Fn.getName() != "__startup_64" &&
-            Fn.getName() != "prepare_exit_to_usermode") {
-          // mov r11, [rsp]
-          addDirectMem(
-              BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::MOV64rm))
-                  .addDef(X86::R11),
-              X86::RSP);
-          // add rsp, 0x8
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::ADD64ri8), X86::RSP)
-              .addReg(X86::RSP)
-              .addImm(0x8);
+      {
+        MCSymbol *SkipSymbol = Fn.getContext().createTempSymbol();
 
-          // jmp *r11
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::JMP64r))
-              .addReg(X86::R11);
+        // If MI is a return, handle it first.
+        if (MI.isReturn() && !MI.isCall()) {
+          if (Fn.getName() != "copy_user_handle_tail" &&
+              Fn.getName() != "__startup_64" &&
+              Fn.getName() != "prepare_exit_to_usermode") {
+            // mov r11, [rsp]
+            addDirectMem(
+                BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::MOV64rm))
+                    .addDef(X86::R11),
+                X86::RSP);
 
-          MI.eraseFromParent();
-          break;
+            // bt $63, r11
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::BT64ri8))
+                .addReg(X86::R11)
+                .addImm(63);
+
+            // jb SkipSymbol
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::JCC_1))
+                .addSym(SkipSymbol)
+                .addImm(X86::COND_B);
+
+            // nop
+            auto trapInst =
+                BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::NOOP));
+
+            trapInst->setPostInstrSymbol(Fn, SkipSymbol);
+
+            // add rsp, 0x8
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::ADD64ri8),
+                    X86::RSP)
+                .addReg(X86::RSP)
+                .addImm(0x8);
+
+            // jmp *r11
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(X86::JMP64r))
+                .addReg(X86::R11);
+
+            MI.eraseFromParent();
+            break;
+          }
         }
       }
 
